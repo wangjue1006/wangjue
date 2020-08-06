@@ -1,4 +1,4 @@
-# wangjue
+# the chatbot based in transformer model
 这是一个基于Transformer的聊天机器人模型
 
 --dataset 选择自己的训练数据集
