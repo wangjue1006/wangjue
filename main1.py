@@ -15,24 +15,23 @@ import torch
 import argparse
 
 parser=argparse.ArgumentParser()
-parser.add_argument('-d','--dataset',required=True,help='please set your dataset')
-parser.add_argument('-m','--max_size',default=25,type=int,action='store_true',help='the sentence max length')
-parser.add_argument('--batch_size',default=50,type=int,action='store_true',help='the batch size')
-parser.add_argument('--d_model',default=64,type=int,action='store_true',help='the dimintion of model')
-parser.add_argument('--if_train',default=True,required=True,help='train or test')
-parser.add_argument('--h',default=8,type=int,action='store_true',help='how many heads')
-parser.add_argument('--n_layers',default=16,type=int,action='store_ture',help='how many layers')
-parser.add_argument('--if_cuda',default=False,action='store_true',help='if need gpu')
-parser.add_argument('--dropout',type=int,default=0.8,action='store_true',help='the dropout')
-parser.add_argument('--lr',type=int,default=0.005,action='store_true',help='the learning rate')
-parser.add_argument('--test_file',default='./bot.pkl',action='store_true',help='the model\'s parameters file')
+parser.add_argument('-d','--data',required=True,help='please set your dataset')
+parser.add_argument('-m','--max_size',default=25,type=int,help='the sentence max length')
+parser.add_argument('--batch_size',default=128,type=int,help='the batch size')
+parser.add_argument('--d_model',default=64,type=int,help='the dimintion of model')
+parser.add_argument('-t','--if_train',type=bool,default=False,help='train or test')
+parser.add_argument('--h',default=8,type=int,help='how many heads')
+parser.add_argument('--n_layers',default=16,type=int,help='how many layers')
+parser.add_argument('-c','--if_cuda',default=True,type=bool,help='if need gpu')
+parser.add_argument('--dropout',type=int,default=0.8,help='the dropout')
+parser.add_argument('--lr',type=int,default=0.005,help='the learning rate')
+parser.add_argument('--test_file',type=str,default='./bot.pkl',help='the model\'s parameters file')
 args=parser.parse_args()
 
 def read_data(file):
     text=open(file,'r')
     data=text.read().split('\nE\n')
     data = list(map(lambda x: func(x), data))
-    i = 0
     data[0] = data[0][1:]
     return data
 
@@ -41,31 +40,33 @@ def func(x):
     x=list(map(lambda y:y[2:],x))
     return x
 
-max_length=args.max_length
+max_length=args.max_size
 BATCH_SIZE=args.batch_size
 d_model=args.d_model
 
-try:
-    vocab=args.vocab
-    vocab_size=len(args.vocab.itos)
-except:
-    vocab=Vocab(max_length)
-    for ss in args.data:
-        for s in ss:
-            vocab.s2i(s)
-    vocab_size=len(vocab.itos)
+def build_vocab(data):
+    try:
+        vocab=args.vocab
+        vocab_size=len(args.vocab.itos)
+    except:
+        vocab=Vocab(max_length)
+        for ss in data:
+            for s in ss:
+                vocab.s2i(s)
+        vocab_size=len(vocab.itos)
+    return vocab
 
 def sub_mask(size):
-    mask=(torch.triu(torch.ones(1,size,size))==1).transpose(-1,-2)
+    mask=(torch.triu(torch.ones(1,size,size),1)==0)
     return mask
 
-def built_dataset(args):
+def built_dataset(vocab):
 
 
-    dataset = Transformer_Dataset(data, max_length, vocab)
-    data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=args.shuffle)
+    dataset = Transformer_Dataset(data, max_length, vocab,args.if_train)
+    data_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-    return vocab,data_loader
+    return data_loader
 
 def make_model(args):
     positional_encoding=Positional_Embedding(max_length,d_model,args.dropout)
@@ -95,15 +96,16 @@ def seq2sentence(seq):
     return vocab.i2s(seq)
 
 def train(data_loader,model,epoches,step):
-    loss_fn = nn.CrossEntropyLoss(ignore_index=vocab.stoi['<pad>']).to(device)
+    loss_fn = nn.NLLLoss(ignore_index=vocab.stoi['<pad>']).to(device)
     optim = Optim.Adam(model.parameters(), lr=args.lr, betas=(0.5, 0.999))
     step_lr = Optim.lr_scheduler.MultiStepLR(optim, [1000, 5000, 10000], gamma=0.1)
     for epoch in range(epoches):
-        for x, y,src_mask,tgt_mask in data_loader:
-
+        for x, y,src_mask,tgt_mask,tgt_i in data_loader:
+            tgt_i=tgt_i.to(device)
             x=x.to(device)
             y=y.to(device)
-
+            src_mask, tgt_mask=src_mask.to(device),tgt_mask.to(device)
+            
             hidden=y
             tgt_new=model(x,hidden.view(-1,max_length),src_mask,tgt_mask)
             pred = torch.argmax(tgt_new, dim=-1).long()
@@ -113,7 +115,7 @@ def train(data_loader,model,epoches,step):
             print(seq2sentence(y[-1].view(-1,1)))
             print('pred_y:',seq2sentence(pred[-1].view(-1,1)))
 
-            loss+=loss_fn(tgt_new.view(len(x)*max_length,-1),y.view(-1))
+            loss+=loss_fn(tgt_new.view(len(x)*max_length,-1),tgt_i.view(-1))
             optim.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
@@ -130,21 +132,26 @@ def talk(data_loader,model,file):
     model.load_state_dict(torch.load(file))
     for x,src_mask in data_loader:
         red=[]
+        tgt = torch.full((len(x), 1), vocab.stoi['<sos>']).long().to(device)
         for i in range(vocab.max_size):
-            x=x.to(device)
-            src_mask=src_mask.to(device)
+            x=x.to(device).long()
+            src_mask=src_mask.to(device).long()
+            print('tgt:',tgt)
+            tgt_new=model(x,tgt,src_mask,sub_mask(tgt.size(-1)).to(device).long())
+            tgt_new=tgt_new[:,-1]
+            pred = torch.argmax(tgt_new[:,1:], dim=-1).long().view(-1,1)
+            red.append(pred[-1])
+            tgt = torch.cat((tgt, pred), dim=-1)
+            if pred.view(-1)==vocab.stoi['<eos>']:
+                break
 
-            tgt=torch.full((len(x),1),vocab.stoi['<sos>'])
-            tgt_new=model(x,tgt,src_mask,sub_mask(tgt.size(-1)))
 
-            pred = torch.argmax(tgt_new, dim=-1).long()
-            red.append(pred)
-
-            tgt=torch.cat((tgt,pred),dim=-1)
         print('pred:',seq2sentence(red))
-data=read_data(args.dataset)
+data=read_data(args.data)
+vocab=build_vocab(data)
+vocab_size=len(vocab.itos)
+data_loader=built_dataset(vocab)
 model=make_model(args)
-data_loader=built_dataset(args)
 
 if args.if_train:
     train(data_loader,model,epoches,step)
