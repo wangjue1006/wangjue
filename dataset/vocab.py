@@ -5,12 +5,12 @@ class Vocab:
     def __init__(self,max_size):
         self.stoi={'<sos>':0,'<pad>':1,'<eos>':2}
         self.itos=[]
+        self.first_token={}
         self.max_size=max_size
         for item in self.stoi:
             self.itos.append(item)
 
-    def s2i(self,sentence):
-        words=jieba.lcut(cop.sub('',sentence))
+    def s2i(self,words):
         for word in words:
             if word not in self.stoi:
                 self.stoi[word]=len(self.itos)
